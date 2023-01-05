@@ -1,3 +1,8 @@
+// Copyright (c) 2023 Tara Keeling
+// 
+// This software is released under the MIT License.
+// https://opensource.org/licenses/MIT
+
 #include <Arduino.h>
 #include <Wire.h>
 
@@ -15,7 +20,7 @@
     #error TODO: Port me to another platform!
 #endif
 
-// Because of timer stuff in this Arduino core
+// Because this is what I've been testing with
 #ifndef ATTINY_CORE
     #error Requires ATTinyCore
 #endif
@@ -80,7 +85,6 @@ private:
     bool down;
 };
 
-void updateUI( void );
 void selectBit( int newBit );
 void drawChar( char c, int x, int y );
 void setCurrentBit( int newValue );
@@ -88,6 +92,8 @@ int measureVCC( void );
 char getProbeState( void );
 bool isColumnSelected( int col );
 void drawProbeValue( void );
+void drawHexValue( void );
+int measureProbeVoltage( void );
 
 static const char hexTable[ 16 ] PROGMEM = {
     '0', '1', '2', '3',
@@ -105,31 +111,33 @@ int selectedBit = 0;
 FilteredButton clickButton( Config_Pin_ClickButton );
 FilteredButton backButton( Config_Pin_BackButton );
 
-// TODO:
-// Do the maaath
 int measureVCC( void ) {
-    uint32_t vcc = 0;
-    // int result = 0;
+    int result = 0;
  
-    // result = analogRead( 0x0C );
-    // delay( 2 );
-    // result = analogRead( 0x0C );
+    result = analogRead( 0x0C );
+    delay( 2 );
+    result = analogRead( 0x0C );
     
-    // vcc = ( 1100UL * 1023UL ) / result;
-
-    return vcc;
+    return ( 1100UL * 1023UL ) / result;
 }
 
-// ISR( TIMER0_COMPA_vect ) {
-//     clickButton.Update( );
-//     backButton.Update( );
-// }
+// probe voltage:
+// x = (probe_adc/1023) * vcc
+// is this correct? idk
+int measureProbeVoltage( void ) {
+    uint32_t vcc = measureVCC( );
+    uint32_t result = 0;
+
+    result = analogRead( Config_Pin_Probe ) * 1000UL;
+    result = ( result / 1023UL ) * vcc;
+    result = result / 1000UL;
+
+    return ( int ) result;
+}
 
 void setup( void ) {
     clickButton.Begin( );
     backButton.Begin( );
-
-    //TIMSK |= _BV( OCIE0A );
 
     Wire.begin( );
     Wire.setClock( 400000 );
@@ -142,15 +150,22 @@ void setup( void ) {
 }
 
 // Source:
-// https://forum.arduino.cc/t/check-if-pin-is-floating-disconnected-high-z/179564/6
+// https://forum.arduino.cc/t/detecting-all-possible-states-of-an-input-pin/696838/15
 // TODO:
 // Proper calculations for VHI, and such...
+#define HIGH_Z_DETECT_PCT 0.05
+#define HIGH_Z_LOW ( ( int ) ( 512.0 * ( 1.0 - HIGH_Z_DETECT_PCT ) ) )
+#define HIGH_Z_HIGH ( ( int ) ( 512.0 * ( 1.0 + HIGH_Z_DETECT_PCT ) ) )
+
 char getProbeState( void ) {
     int adcValue = analogRead( Config_Pin_Probe );
     char result = 'Z';
 
-    if ( adcValue <= 486 || adcValue >= 538 ) {
-        if ( adcValue <= 486 ) {
+    // i have absolutely no idea if this is correct
+    if ( adcValue < HIGH_Z_LOW || adcValue > HIGH_Z_HIGH ) {
+        adcValue = measureProbeVoltage( );
+
+        if ( adcValue < Config_VIH ) {
             result = '0';
         } else {
             result = '1';
@@ -164,12 +179,12 @@ bool isColumnSelected( int col ) {
     return ( 15 - col ) == selectedBit;
 }
 
-void drawValue( void ) {
+void drawHexValue( void ) {
     uint16_t value = binaryValue;
 
     lcd.setCursor( 0, 0 );
     lcd.setInvertMode( false );
-    
+
     for ( int i = 0; i < 4; i++ ) {
         lcd.write( pgm_read_byte( &hexTable[ ( ( value >> 12 ) & 0x0F ) ] ) );
         value <<= 4;
@@ -187,8 +202,6 @@ void drawBitValues( void ) {
     uint16_t value = binaryValue;
     bool isSelected = false;
     char c = 0;
-
-    lcd.setInvertMode( false );
 
     for ( int i = 15; i >= 0; i-- ) {
         isSelected = isColumnSelected( i );
@@ -211,8 +224,6 @@ void drawBitNumbers( void ) {
     char upper = 0;
     char lower = 0;
 
-    lcd.setInvertMode( false );
-
     for ( int i = 15, x = 0; i >= 0; i-- ) {
         whole = i / 10;
         frac = i % 10;
@@ -231,12 +242,6 @@ void drawBitNumbers( void ) {
 void drawProbeValue( void ) {
     lcd.setInvertMode( true );
     drawChar( probeValue, 15 - selectedBit, 3 );
-}
-
-void updateUI( void ) {
-    drawValue( );
-    drawBitNumbers( );
-    drawBitValues( );
 }
 
 void selectBit( int newBit ) {
@@ -259,14 +264,14 @@ void setCurrentBit( int newValue ) {
     }
 
     selectBit( selectedBit + 1 );
-    drawValue( );
+    drawHexValue( );
 }
 
 void loop( void ) {
     uint32_t nextProbeUpdate = 0;
     uint32_t timeNow = 0;
 
-    drawValue( );
+    drawHexValue( );
     drawBitNumbers( );
     drawBitValues( );
     drawProbeValue( );
@@ -290,7 +295,7 @@ void loop( void ) {
 
         if ( clickButton.IsDown( ) ) {
             if ( probeValue != 'Z' ) {
-                setCurrentBit( ( probeValue ) == '1' ? 1 : 0 );
+                setCurrentBit( ( probeValue == '1' ) ? 1 : 0 );
             }
         }
 
